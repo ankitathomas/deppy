@@ -1,8 +1,15 @@
 package source
 
-import "fmt"
+import (
+	"fmt"
+)
 
-type EntityID string
+type EntityID struct {
+	CSVName string `json:"name,omitempty"`
+	Package string `json:"package,omitempty"`
+	Version string `json:"version,omitempty"`
+	Source string`json:"source,omitempty"` //?
+}
 
 type EntityPropertyNotFoundError string
 
@@ -11,23 +18,23 @@ func (p EntityPropertyNotFoundError) Error() string {
 }
 
 type Entity struct {
-	id         EntityID
-	properties map[string]string
+	Id         EntityID `json:"id,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
 }
 
 func NewEntity(id EntityID, properties map[string]string) *Entity {
 	return &Entity{
-		id:         id,
-		properties: properties,
+		Id:         id,
+		Properties: properties,
 	}
 }
 
 func (e *Entity) ID() EntityID {
-	return e.id
+	return e.Id
 }
 
 func (e *Entity) GetProperty(key string) (string, error) {
-	value, ok := e.properties[key]
+	value, ok := e.Properties[key]
 	if !ok {
 		return "", EntityPropertyNotFoundError(key)
 	}

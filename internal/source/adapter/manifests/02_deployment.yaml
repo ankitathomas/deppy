@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catsrc-deppy-adapter
+  namespace: openshift-marketplace
+spec:
+  selector:
+    matchLabels:
+      olm.deppyadapter.catalogsource: certified-operators
+  template:
+    metadata:
+      labels:
+        olm.deppyadapter.catalogsource: certified-operators
+    spec:
+      containers:
+      - name: catsrc-deppy-adapter
+        image: quay.io/ankitathomas/olm:deppycatsrc
+        command: ["./catalog_source_controller"]
+        args: ["-p", "50051"]
+        ports:
+        - name: grpc
+          containerPort: 50051
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: catsrc-deppy-adapter
