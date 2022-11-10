@@ -3,7 +3,10 @@ package catalogsource
 import (
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 	"github.com/operator-framework/deppy/internal/source/adapter/api"
+	"github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/clientset/versioned"
+	"github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/informers/externalversions"
 	listers "github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/listers/operators/v1alpha1"
+	controllerruntime "sigs.k8s.io/controller-runtime"
 
 	"fmt"
 	"github.com/sirupsen/logrus"
@@ -36,15 +39,27 @@ func NewCatalogSourceDeppyAdapter(opts ...CatalogSourceDeppyAdapterOptions) (*Ca
 	if c.catsrc == nil {
 		return nil, fmt.Errorf("CatalogSourceDeppyAdapter requires non-nil catsrc")
 	}
-	if c.catsrc.Spec.Address == "" {
-		if c.catsrc.Name == "" {
-			return nil, fmt.Errorf("no CatalogSource specified for adapter")
-		}
-		if c.catsrc.Namespace == "" {
-			return nil, fmt.Errorf("no namespace specified for %s CatalogSource adapter", c.catsrc.Name)
-		}
+	if c.catsrc.Name != "" && c.catsrc.Namespace != "" {
 		if c.catsrcLister == nil {
 			return nil, fmt.Errorf("CatalogSource %s/%s requires WithLister()", c.catsrc.Namespace, c.catsrc.Name)
+		}
+		cat, err := c.catsrcLister.CatalogSources(c.catsrc.Namespace).Get(c.catsrc.Name)
+		if err != nil {
+			c.logger.Errorf("could not list catsrc: %v", err)
+		} else {
+			c.logger.Infof("catsrc lister success: %+v", cat)
+		}
+		if cc, err2 := controllerruntime.GetConfig(); err2 == nil {
+			crClient, err := versioned.NewForConfig(cc)
+			if err != nil {
+				c.logger.Infof("Error creating versioned config: %v", err)
+			} else {
+				catsrcLister := externalversions.NewSharedInformerFactoryWithOptions(crClient, 5*time.Minute).Operators().V1alpha1().CatalogSources().Lister()
+				cat, err := catsrcLister.CatalogSources(c.catsrc.Namespace).Get(c.catsrc.Name)
+				c.logger.Infof("testing v2 config: %v, %v", err, cat)
+			}
+		} else  {
+			c.logger.Infof("Error creating controllerruntime config: %v", err2)
 		}
 	}
 	return c, nil
@@ -95,12 +110,13 @@ func WithNamespacedSource(name, namespace string) CatalogSourceDeppyAdapterOptio
 }
 
 func (s *CatalogSourceDeppyAdapter) ListEntities(req *api.ListEntitiesRequest, stream api.DeppySourceAdapter_ListEntitiesServer) error {
-	s.logger.Info("ListEntities", time.Now())
+	s.logger.Infof("ListEntities: %v, catsrc %s/%s (%s)", time.Now(), s.catsrc.Namespace, s.catsrc.Name, s.catsrc.Spec.Address)
 	// TODO: better way to identify local vs non-local catsrc
 	// TODO: watch catsrc for changes
 	if s.catsrc.Namespace != "" && s.catsrc.Name != "" {
 		catsrc, err := s.catsrcLister.CatalogSources(s.catsrc.Namespace).Get(s.catsrc.Name)
 		if err != nil {
+			s.logger.Errorf("ListEntities: Failed to list: %v", err)
 			return err
 		}
 		s.catsrc = catsrc

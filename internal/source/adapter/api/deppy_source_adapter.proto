@@ -5,7 +5,7 @@ option go_package = "./;api";
 package api;
 
 service DeppySourceAdapter {
-  rpc ListEntities(ListEntitiesRequest) returns (stream Entity) {}// (stream Entity) {}
+  rpc ListEntities(ListEntitiesRequest) returns (stream Entity) {}
 }
 
 message ListEntitiesRequest{}

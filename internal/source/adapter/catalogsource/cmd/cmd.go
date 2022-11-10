@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"github.com/operator-framework/deppy/internal/source/adapter/api"
 	"github.com/operator-framework/deppy/internal/source/adapter/catalogsource"
 	"github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/clientset/versioned"
 	"github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/informers/externalversions"
+	clientv1alpha1 "github.com/operator-framework/operator-lifecycle-manager/pkg/api/client/clientset/versioned/typed/operators/v1alpha1"
 	"github.com/operator-framework/operator-registry/pkg/lib/graceful"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 
 	"fmt"
 	"github.com/sirupsen/logrus"
@@ -54,13 +59,13 @@ func runCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to listen: %s", err)
 	}
 
-	deppyCatsrcAdapter, err := newCatalogSourceAdapter(cmd.Flags())
+	logger := logrus.NewEntry(logrus.New())
+	deppyCatsrcAdapter, err := newCatalogSourceAdapter(cmd.Flags(), logger)
 	if err != nil {
 		return fmt.Errorf("Invalid CatalogSourceAdapter configuration: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	logger := logrus.NewEntry(logrus.New())
 	api.RegisterDeppySourceAdapterServer(grpcServer, deppyCatsrcAdapter)
 	reflection.Register(grpcServer)
 
@@ -72,7 +77,7 @@ func runCmdFunc(cmd *cobra.Command, _ []string) error {
 	})
 }
 
-func newCatalogSourceAdapter(flags *pflag.FlagSet) (*catalogsource.CatalogSourceDeppyAdapter, error) {
+func newCatalogSourceAdapter(flags *pflag.FlagSet, logger *logrus.Entry) (*catalogsource.CatalogSourceDeppyAdapter, error) {
 	var opts = []catalogsource.CatalogSourceDeppyAdapterOptions{}
 	ns, err := flags.GetString("namespace")
 	if err != nil {
@@ -84,19 +89,21 @@ func newCatalogSourceAdapter(flags *pflag.FlagSet) (*catalogsource.CatalogSource
 	}
 	if ns != "" && name != "" {
 		opts = append(opts, catalogsource.WithNamespacedSource(name, ns))
-	}
 
-	address, err := flags.GetString("address")
-	if err != nil {
-		return nil, err
-	}
-	if address != "" {
-		opts = append(opts, catalogsource.WithSourceAddress(name, address))
-	} else {
 		kubeconfigPath, err := flags.GetString("kubeconfig")
 		if err != nil {
 			return nil, err
 		}
+
+		c, err := newCatsrcLister(kubeconfigPath)
+		if err != nil {
+			return nil, err
+		}
+		catsrcs, err := c.CatalogSources(ns).List(context.TODO(), v1.ListOptions{})
+		logger.Infof("Lister: %v, %v", catsrcs, err)
+
+clusterConfig, err := rest.InClusterConfig()
+logger.Infof("ClusterConfig: %+v, %v", clusterConfig, err)
 
 		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 		if err != nil {
@@ -112,6 +119,47 @@ func newCatalogSourceAdapter(flags *pflag.FlagSet) (*catalogsource.CatalogSource
 		// TODO: jitter
 		catsrcLister := externalversions.NewSharedInformerFactoryWithOptions(crClient, 5*time.Minute).Operators().V1alpha1().CatalogSources().Lister()
 		opts = append(opts, catalogsource.WithLister(catsrcLister))
+	} else {
+		address, err := flags.GetString("address")
+		if err != nil {
+			return nil, err
+		}
+		if address != "" {
+			opts = append(opts, catalogsource.WithSourceAddress(name, address))
+		}
 	}
+
 	return catalogsource.NewCatalogSourceDeppyAdapter(opts...)
+}
+
+func newCatsrcLister(kubeconfigPath string) (*clientv1alpha1.OperatorsV1alpha1Client, error){
+	c, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	configShallowCopy := *c
+
+	if configShallowCopy.UserAgent == "" {
+		configShallowCopy.UserAgent = rest.DefaultKubernetesUserAgent()
+	}
+
+	// share the transport between all clients
+	httpClient, err := rest.HTTPClientFor(&configShallowCopy)
+	if err != nil {
+		return nil, err
+	}
+
+
+	if configShallowCopy.RateLimiter == nil && configShallowCopy.QPS > 0 {
+		if configShallowCopy.Burst <= 0 {
+			return nil, fmt.Errorf("burst is required to be greater than 0 when RateLimiter is not set and QPS is set to greater than 0")
+		}
+		configShallowCopy.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(configShallowCopy.QPS, configShallowCopy.Burst)
+	}
+	v1alpha1Client, err := clientv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return v1alpha1Client, nil
 }
