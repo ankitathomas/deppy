@@ -41,7 +41,8 @@ type sourceCache struct {
 
 func NewCachedRegistryQuerier(watch watch.Interface, client client.Client, rClient RegistryClient, logger *logr.Logger) *CachedRegistryEntitySource {
 	if logger == nil {
-		*logger = zap.New()
+		l := zap.New()
+		logger = &l
 	}
 	return &CachedRegistryEntitySource{
 		watch:   watch,
