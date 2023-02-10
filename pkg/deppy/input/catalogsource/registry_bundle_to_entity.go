@@ -25,18 +25,27 @@ type DefaultChannel struct {
 	DefaultChannel string `json:"defaultchannel"`
 }
 
-const TypeDefaultChannel = "olm.package.defaultchannel"
-const TypeBundleSource = "olm.bundle.path"
+const (
+	TypeDefaultChannel = "olm.package.defaultchannel"
+	TypeBundleSource   = "olm.bundle.path"
+	TypeLabel          = "olm.label"
+	TypeLabelRequired  = "olm.label.required"
+)
 
-func entityFromBundle(catsrcID string, pkg *catalogsourceapi.Package, bundle *catalogsourceapi.Bundle) (*input.Entity, error) {
+func EntityFromBundle(catsrcID string, pkg *catalogsourceapi.Package, bundle *catalogsourceapi.Bundle) (*input.Entity, error) {
 	properties := map[string]string{}
 	var errs []error
 
 	// Multivalue properties
-	propsList := map[string]map[string]struct{}{
-		property.TypeGVK:             {},
-		property.TypeGVKRequired:     {},
-		property.TypePackageRequired: {},
+	propsList := map[string]map[string]struct{}{}
+
+	setPropertyValue := func(key, value string) {
+		if _, ok := propsList[key]; !ok {
+			propsList[key] = map[string]struct{}{}
+		}
+		if _, ok := propsList[key][value]; !ok {
+			propsList[key][value] = struct{}{}
+		}
 	}
 
 	for _, prvAPI := range bundle.ProvidedApis {
@@ -45,7 +54,7 @@ func entityFromBundle(catsrcID string, pkg *catalogsourceapi.Package, bundle *ca
 			errs = append(errs, err)
 			continue
 		}
-		propsList[property.TypeGVK][string(apiValue)] = struct{}{}
+		setPropertyValue(property.TypeGVK, string(apiValue))
 	}
 
 	for _, reqAPI := range bundle.RequiredApis {
@@ -54,22 +63,31 @@ func entityFromBundle(catsrcID string, pkg *catalogsourceapi.Package, bundle *ca
 			errs = append(errs, err)
 			continue
 		}
-		propsList[property.TypeGVKRequired][string(apiValue)] = struct{}{}
+		setPropertyValue(property.TypeGVKRequired, string(apiValue))
 	}
 
 	for _, reqAPI := range bundle.Dependencies {
-		propsList[property.TypeGVKRequired][reqAPI.Value] = struct{}{}
+		switch reqAPI.Type {
+		case property.TypeGVK:
+			setPropertyValue(property.TypeGVKRequired, reqAPI.Value)
+		case property.TypePackage:
+			setPropertyValue(property.TypePackageRequired, reqAPI.Value)
+		case TypeLabel: // legacy property
+			setPropertyValue(TypeLabelRequired, reqAPI.Value)
+		default:
+			setPropertyValue(reqAPI.Type, reqAPI.Value)
+		}
 	}
 
 	for _, p := range bundle.Properties {
-		if p.Type == property.TypeChannel || p.Type == property.TypePackage || p.Type == TypeDefaultChannel {
+		if p.Type == property.TypeChannel ||
+			p.Type == property.TypePackage ||
+			p.Type == TypeDefaultChannel ||
+			p.Type == property.TypeBundleObject {
 			// avoid duplicates
 			continue
 		}
-		if _, ok := propsList[p.Type]; !ok {
-			propsList[p.Type] = map[string]struct{}{}
-		}
-		propsList[p.Type][p.Value] = struct{}{}
+		setPropertyValue(p.Type, p.Value)
 	}
 
 	for pType, pValues := range propsList {
@@ -127,24 +145,16 @@ func entityFromBundle(catsrcID string, pkg *catalogsourceapi.Package, bundle *ca
 		properties[property.TypeChannel] = string(upValue)
 	}
 
-	defaultValue, err := util.JSONMarshal(DefaultChannel{
-		DefaultChannel: pkg.DefaultChannelName,
-	})
-	if err != nil {
-		errs = append(errs, err)
-	} else {
-		propsList[TypeDefaultChannel] = map[string]struct{}{string(defaultValue): {}}
-	}
-
+	properties[TypeDefaultChannel] = pkg.DefaultChannelName
 	properties[TypeBundleSource] = bundle.BundlePath
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("failed to parse properties for bundle %s/%s in %s: %v", bundle.GetPackageName(), bundle.GetVersion(), catsrcID, errors.NewAggregate(errs))
 	}
 
-	return input.NewEntity(entityIDFromBundle(catsrcID, bundle), properties), nil
-}
+	entityIDFromBundle := func(catsrcID string, bundle *catalogsourceapi.Bundle) deppy.Identifier {
+		return deppy.Identifier(fmt.Sprintf("%s/%s/%s/%s", catsrcID, bundle.PackageName, bundle.ChannelName, bundle.Version))
+	}
 
-func entityIDFromBundle(catsrcID string, bundle *catalogsourceapi.Bundle) deppy.Identifier {
-	return deppy.Identifier(fmt.Sprintf("%s/%s/%s/%s", catsrcID, bundle.PackageName, bundle.ChannelName, bundle.Version))
+	return input.NewEntity(entityIDFromBundle(catsrcID, bundle), properties), nil
 }
